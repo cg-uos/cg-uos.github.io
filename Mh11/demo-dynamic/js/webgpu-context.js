@@ -1,11 +1,10 @@
 // Device init, plus a *persistent*-resource compute-kernel wrapper.
 //
-// ../../web/js/webgpu-context.js's `runCompute` recreates the shader module,
-// pipeline, and every buffer on every call -- fine for a one-shot
-// "Reconstruct" button, but far too much per-frame overhead for a ~30-60fps
-// animation loop. `GPUKernel` instead builds those once (`configure`) and,
-// every frame, only writes new input data and reads back the result
-// (`run`), via buffers it keeps alive until `destroy()`.
+// Recreating the shader module, pipeline, and every buffer on every call
+// would be fine for a one-shot action, but far too much per-frame overhead
+// for a ~30-60fps animation loop. `GPUKernel` instead builds those once
+// (`configure`) and, every frame, only writes new input data and reads
+// back the result (`run`), via buffers it keeps alive until `destroy()`.
 
 export async function initWebGPU() {
     if (!('gpu' in navigator)) {

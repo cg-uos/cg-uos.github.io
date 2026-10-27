@@ -1,16 +1,13 @@
-// WGSL compute shader builders. These mirror the shader-string generation in
-// hex.apply_FIR_checkerboard_WebGPU and each family's eval_*_WebGPU_bulk
-// (OneDrive-Personal/work/python/{hex,Mh11,Mh20,Vhex}.py). The WGSL kernel
-// bodies themselves are copied verbatim -- they are plain WGSL (not
-// wgpu-py-specific), so the box-spline evaluation math (the paper's Fig. 3
-// EvaluateSpline algorithm) does not need to be re-derived, only re-hosted.
+// WGSL compute shader builders: one FIR prefilter kernel, plus one
+// box-spline evaluation kernel per spline family (Mh11, Mh20, order-4
+// Vhex). Each builder returns a WGSL source string, parameterized by the
+// current lattice size and (for eval) the number of query points, ready to
+// hand to GPUKernel.
 
 import { shells } from './hex.js';
 
-// Index-space transform used only to turn shells[] offsets into
-// checkerboard-array neighbor offsets for the FIR shader. Distinct from
-// hex.js's `Ghex_inv` (a different, geometric transform used by the eval
-// shaders) -- kept separately named to avoid conflating the two.
+// Turns shells[] offsets into checkerboard-array neighbor offsets for the
+// FIR shader; distinct from hex.js's `Ghex_inv`.
 const indexXfmG = [[1, 1], [-1, 1]];
 
 function formatXfmCoeffHeader(Xfm) {
@@ -22,7 +19,9 @@ function formatXfmCoeffHeader(Xfm) {
     );
 }
 
-// Port of hex.apply_FIR_checkerboard_WebGPU's shader_source generation.
+// Builds the FIR prefilter compute shader: for each lattice cell, a
+// weighted sum of neighbor shells (shells[0..2]) with the given FIR
+// coefficients.
 export function buildFIRShader(FIRcoeffs, nx, ny) {
     let src = `const size_data: vec2i = vec2i(${nx},${ny});\n`;
     src += `
@@ -41,19 +40,8 @@ export function buildFIRShader(FIRcoeffs, nx, ny) {
         @workgroup_size(16,16,1)
         fn main(@builtin(global_invocation_id) index: vec3<u32>) {
             let idx: vec2i = vec2i(index.xy);
-            // The dispatch's workgroup count rounds up (ceil(size/16)), so
-            // some invocations fall outside [0,size_data) on any size that
-            // isn't a multiple of 16 (i.e. always, since size_data is odd
-            // by the checkerboard convention). Without this guard, such a
-            // thread still computes a value and writes to a flat index past
-            // the end of data_out -- undefined per the WGSL spec ("clamped
-            // to a valid index, or the write has no effect"), and if a
-            // driver clamps several different out-of-range threads onto
-            // the same in-bounds slot, whichever one finishes last wins --
-            // a genuine race, since GPU thread/workgroup scheduling order
-            // isn't guaranteed identical between dispatches even for
-            // byte-identical input. (Confirmed: this is exactly what caused
-            // visible changes while the animation was paused.)
+            // Guards against the rounded-up dispatch (ceil(size/16)) writing
+            // past the end of data_out, since size_data is always odd here.
             if (idx.x >= size_data.x || idx.y >= size_data.y) {
                 return;
             }
@@ -132,7 +120,9 @@ const TRANSFORM_TO_REF_6DIR = `
         }
 `;
 
-// Port of Mh11.eval_Mh11_WebGPU_bulk's shader_source (Mh11.py:838-1007).
+// Builds the Mh11 box-spline evaluation shader: transforms each query
+// point into its reference triangle and evaluates the degree-4 piecewise
+// polynomial from the 24 surrounding coefficients.
 export function buildEvalShader_Mh11(nx, ny, Xfm, numPts) {
     let src = `const size_coeff: vec2i = vec2i(${nx}, ${ny});\n`;
     src += `const num_pts: u32 = ${numPts}u;\n`;
@@ -203,11 +193,8 @@ export function buildEvalShader_Mh11(nx, ny, Xfm, numPts) {
         @compute
         @workgroup_size(256,1,1)
         fn main(@builtin(global_invocation_id) index: vec3<u32>) {
-            // dispatch rounds workgroup count up to a multiple of 256, so
-            // the tail invocations beyond num_pts would otherwise read
-            // pts[] and write values[] past the end of each buffer -- see
-            // the identical, confirmed-triggering issue fixed in
-            // buildFIRShader above.
+            // Guards against the rounded-up dispatch reading/writing past
+            // the end of pts[]/values[] (same as buildFIRShader above).
             if (index.x >= num_pts) {
                 return;
             }
@@ -261,7 +248,9 @@ export function buildEvalShader_Mh11(nx, ny, Xfm, numPts) {
     return src;
 }
 
-// Port of Mh20.eval_Mh20_WebGPU_bulk's shader_source (Mh20.py:469-603).
+// Builds the Mh20 box-spline evaluation shader: the same reference-triangle
+// scheme as Mh11, but over a simpler 2-region subdivision and a degree-4
+// polynomial from 12 surrounding coefficients.
 export function buildEvalShader_Mh20(nx, ny, Xfm, numPts) {
     let src = `const size_coeff: vec2i = vec2i(${nx}, ${ny});\n`;
     src += `const num_pts: u32 = ${numPts}u;\n`;
@@ -396,8 +385,9 @@ export function buildEvalShader_Mh20(nx, ny, Xfm, numPts) {
     return src;
 }
 
-// Port of Vhex.eval_Vhex_WebGPU_bulk's shader_source, order==4 branch
-// (Vhex.py:1048-1247).
+// Builds the order-4 Vhex evaluation shader: the same reference-triangle
+// scheme as Mh11, evaluating a degree-6 polynomial from 16 surrounding
+// coefficients.
 export function buildEvalShader_Vhex4(nx, ny, Xfm, numPts) {
     let src = `const size_coeff: vec2i = vec2i(${nx}, ${ny});\n`;
     src += `const num_pts: u32 = ${numPts}u;\n`;

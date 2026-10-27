@@ -1,6 +1,5 @@
 // Orchestrates the sample -> prefilter -> evaluate pipeline for all three
-// spline families, mirroring demo_reconstruct_analytic_function.py's
-// pipeline (python/demo_reconstruct_analytic_function.py:64-177).
+// spline families.
 
 import { sampleFunction, SQRT3 } from './hex.js';
 import { functions } from './functions.js';
@@ -15,8 +14,8 @@ import {
 import { runCompute } from './webgpu-context.js';
 import { supportPolygon } from './support.js';
 
-// Xfm_coeff (demo_reconstruct_analytic_function.py:95): its 2x2 block equals
-// hex.G in index space; row-major nested-array layout, Xfm[row][col].
+// Xfm_coeff: its 2x2 block equals
+// Ghex in index space; row-major nested-array layout, Xfm[row][col].
 const XFM_COEFF = [
     [1, 1, 0],
     [-1, 1, 0],
@@ -45,11 +44,10 @@ async function runEvalGPU(device, buildEvalShader, coeff, nx, ny, pts, numPts) {
 
 // Builds the (x,y) evaluation grid over `domain` and its corresponding
 // reference-space query points for a coefficient array whose lattice origin
-// is (i_min,j_min). Shared by reconstruct() and reconstructBasis().
-// xy_recon = xy/(2*scaling) + [-i_min/2, -j_min*sqrt(3)/2]
-// (demo_reconstruct_analytic_function.py:98). Matches
-// np.meshgrid(linspace_x, linspace_y) with default 'xy' indexing: x varies
-// fastest (inner loop), y is the outer (row) axis.
+// is (i_min,j_min).
+// xy_recon = xy/(2*scaling) + [-i_min/2, -j_min*sqrt(3)/2].
+// Matches np.meshgrid(linspace_x, linspace_y) with default 'xy' indexing: 
+// x varies fastest (inner loop), y is the outer (row) axis.
 function buildEvalGrid(domain, scaling, i_min, j_min, Nx, Ny) {
     const xs = new Float32Array(Nx);
     const ys = new Float32Array(Ny);
@@ -77,13 +75,28 @@ function buildEvalGrid(domain, scaling, i_min, j_min, Nx, Ny) {
     return { xs, ys, ptsRecon, numPts };
 }
 
-// options: { funcName, scaling, prefilterScheme: 'FIR'|'IIR2', Nx, Ny }
+// options: { funcName, scaling, prefilterScheme: 'FIR'|'IIR2'|'none', Nx, Ny }
+// `scaling` is the UI's requested sampling density, but a functions[] entry
+// can override it with `fixedScaling` (e.g. the "delta (basis)" entry) when
+// the named thing isn't really a "function sampled at a density" (a basis
+// shape has no sampling density of its own). `noGroundTruth` means there's
+// no meaningful meanAbsError for this entry regardless of prefilter choice
+// (a delta has nothing sensible to compare a reconstruction against); the
+// support-polygon overlay additionally requires prefilterScheme === 'none',
+// since FIR/IIR2 spread the delta into the prefilter's own impulse
+// response, which isn't compactly supported the same way the raw basis
+// function is -- the polygon wouldn't be exact for those.
 export async function reconstruct(device, options) {
-    const { funcName, scaling, prefilterScheme, Nx = 100, Ny = 100 } = options;
-    const { fn, domain } = functions[funcName];
+    const { funcName, scaling: uiScaling, prefilterScheme, Nx = 100, Ny = 100 } = options;
+    const { fn, domain, fixedScaling, noGroundTruth } = functions[funcName];
+    const scaling = fixedScaling ?? uiScaling;
+    const showSupportPolygon = noGroundTruth && prefilterScheme === 'none';
 
-    // margin = scaling*9 (demo_reconstruct_analytic_function.py:14,69)
-    const margin = scaling * 9;
+    // margin = scaling*9 (demo_reconstruct_analytic_function.py:14,69) covers
+    // the FIR/IIR2 prefilter's own stencil reach (~3 cells) composed with
+    // the eval shader's (~3 cells); with no prefilter running, only the eval
+    // shader's own reach needs covering, so a smaller margin suffices.
+    const margin = scaling * (prefilterScheme === 'none' ? 4 : 9);
     const sampleDomain = [
         domain.xmin - margin,
         domain.ymin - margin,
@@ -94,22 +107,30 @@ export async function reconstruct(device, options) {
     const { i_min, j_min, nx, ny, z } = sampleFunction(fn, sampleDomain, scaling);
     const { xs, ys, ptsRecon, numPts } = buildEvalGrid(domain, scaling, i_min, j_min, Nx, Ny);
 
-    const zTrue = new Float32Array(numPts);
-    let idx = 0;
-    for (let row = 0; row < Ny; row++) {
-        for (let col = 0; col < Nx; col++) {
-            zTrue[idx] = fn(xs[col], ys[row]);
-            idx++;
+    let zTrue = null;
+    if (!noGroundTruth) {
+        zTrue = new Float32Array(numPts);
+        let idx = 0;
+        for (let row = 0; row < Ny; row++) {
+            for (let col = 0; col < Nx; col++) {
+                zTrue[idx] = fn(xs[col], ys[row]);
+                idx++;
+            }
         }
     }
 
     const results = {};
     for (const family of FAMILIES) {
-        const pf = prefilters[family.key][prefilterScheme];
-        const coeff =
-            prefilterScheme === 'FIR'
-                ? await runFIRPrefilterGPU(device, pf, z, nx, ny)
-                : applyIirCheckerboard(z, nx, ny, pf);
+        let coeff;
+        if (prefilterScheme === 'none') {
+            coeff = z;
+        } else {
+            const pf = prefilters[family.key][prefilterScheme];
+            coeff =
+                prefilterScheme === 'FIR'
+                    ? await runFIRPrefilterGPU(device, pf, z, nx, ny)
+                    : applyIirCheckerboard(z, nx, ny, pf);
+        }
 
         const zRecon = await runEvalGPU(
             device,
@@ -121,56 +142,16 @@ export async function reconstruct(device, options) {
             numPts
         );
 
-        let errSum = 0;
-        for (let k = 0; k < numPts; k++) errSum += Math.abs(zTrue[k] - zRecon[k]);
-        const meanAbsError = errSum / numPts;
-
-        results[family.key] = { zRecon, meanAbsError, label: family.label };
+        if (showSupportPolygon) {
+            results[family.key] = { zRecon, label: family.label, supportPolygon: supportPolygon(family.key, scaling) };
+        } else if (noGroundTruth) {
+            results[family.key] = { zRecon, label: family.label };
+        } else {
+            let errSum = 0;
+            for (let k = 0; k < numPts; k++) errSum += Math.abs(zTrue[k] - zRecon[k]);
+            results[family.key] = { zRecon, meanAbsError: errSum / numPts, label: family.label };
+        }
     }
 
     return { Nx, Ny, xs, ys, zTrue, results, domain };
-}
-
-// Plots each family's raw basis function: the spline evaluated from a single
-// unit coefficient at the lattice origin with every other coefficient zero,
-// and no prefilter applied at all. Reuses sampleFunction with a delta
-// "function" so the coefficient array is built through the exact same
-// checkerboard-lattice machinery as reconstruct(), rather than hand-deriving
-// the index mapping separately.
-const BASIS_DOMAIN = { xmin: -2, ymin: -2, xmax: 2, ymax: 2 };
-const BASIS_SCALING = 0.2;
-
-function deltaFn(x, y) {
-    return x === 0 && y === 0 ? 1 : 0;
-}
-
-export async function reconstructBasis(device, options = {}) {
-    const { Nx = 100, Ny = 100 } = options;
-    const domain = BASIS_DOMAIN;
-    const scaling = BASIS_SCALING;
-
-    // Small safety margin so no coefficient within the display domain is
-    // edge-clamped by sampleFunction's bounding box.
-    const margin = scaling * 4;
-    const sampleDomain = [
-        domain.xmin - margin,
-        domain.ymin - margin,
-        domain.xmax + margin,
-        domain.ymax + margin,
-    ];
-
-    const { i_min, j_min, nx, ny, z } = sampleFunction(deltaFn, sampleDomain, scaling);
-    const { xs, ys, ptsRecon, numPts } = buildEvalGrid(domain, scaling, i_min, j_min, Nx, Ny);
-
-    const results = {};
-    for (const family of FAMILIES) {
-        const zRecon = await runEvalGPU(device, family.buildEvalShader, z, nx, ny, ptsRecon, numPts);
-        results[family.key] = {
-            zRecon,
-            label: family.label,
-            supportPolygon: supportPolygon(family.key, scaling),
-        };
-    }
-
-    return { Nx, Ny, xs, ys, results, domain };
 }

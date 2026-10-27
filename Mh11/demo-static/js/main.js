@@ -1,6 +1,6 @@
 import { functions } from './functions.js';
 import { initWebGPU } from './webgpu-context.js';
-import { reconstruct, reconstructBasis } from './reconstruct.js';
+import { reconstruct } from './reconstruct.js';
 import { makeSurface, MATH_TITLE_FONT } from './plot.js';
 
 const PLOT_TITLES = {
@@ -9,12 +9,13 @@ const PLOT_TITLES = {
     Mh20: '<i>M<sub>h20</sub></i>',
 };
 
-const BASIS_OPTION = 'Basis';
+const BASIS_OPTION = 'delta (basis)';
 
 const funcSelect = document.getElementById('funcSelect');
 const scalingRange = document.getElementById('scalingRange');
 const scalingValue = document.getElementById('scalingValue');
 const prefilterSelect = document.getElementById('prefilterSelect');
+const lightShadingCheckbox = document.getElementById('lightShadingCheckbox');
 const reconstructBtn = document.getElementById('reconstructBtn');
 const statusEl = document.getElementById('status');
 const bannerEl = document.getElementById('banner');
@@ -41,25 +42,22 @@ for (const name of Object.keys(functions)) {
     opt.textContent = name;
     funcSelect.appendChild(opt);
 }
-const basisOpt = document.createElement('option');
-basisOpt.value = BASIS_OPTION;
-basisOpt.textContent = 'Basis (no prefilter)';
-funcSelect.appendChild(basisOpt);
 funcSelect.value = 'Saddle';
 
 scalingRange.addEventListener('input', () => {
     scalingValue.textContent = Number(scalingRange.value).toFixed(2);
 });
 
-// Selecting "Basis" from the Function dropdown replaces the whole pipeline
-// (no function sampled, no prefilter applied -- see reconstructBasis in
-// reconstruct.js), so the density/prefilter controls that only affect the
-// normal reconstruction pipeline are disabled, and there's no "Original"
-// panel.
+// Selecting "delta (basis)" routes through the same reconstruct() pipeline
+// (see that entry in functions.js): `fixedScaling` overrides the UI's
+// density control, so it's disabled here since it'd have no effect, but the
+// prefilter is a real, user-visible choice for this entry too (FIR/IIR2
+// prefiltering of a delta shows the prefilter's own impulse response rather
+// than the raw basis function). There's no sampled function and no
+// "Original" panel for it either way.
 function updateBasisModeUI() {
     const basisMode = funcSelect.value === BASIS_OPTION;
     scalingRange.disabled = basisMode;
-    prefilterSelect.disabled = basisMode;
     panelOriginal.hidden = basisMode;
     plotGrid.classList.toggle('basis-mode', basisMode);
     captionMh11.innerHTML = basisMode ? BASIS_CAPTIONS.Mh11 : NORMAL_CAPTIONS.Mh11;
@@ -71,40 +69,56 @@ updateBasisModeUI();
 
 let device = null;
 
+// Cached so toggling "Light shading" can just redraw the existing surfaces
+// instead of re-running the whole sample/prefilter/evaluate pipeline for a
+// change that's purely about how the result is rendered.
+let lastResult = null;
+let lastBasisMode = false;
+
+function renderResult(result, basisMode) {
+    const lightShading = lightShadingCheckbox.checked;
+
+    if (!basisMode) {
+        makeSurface('plotOriginal', result.xs, result.ys, result.zTrue, result.Nx, result.Ny, 'Original', null, null, lightShading);
+    }
+    makeSurface(
+        'plotMh11', result.xs, result.ys, result.results.Mh11.zRecon, result.Nx, result.Ny, PLOT_TITLES.Mh11,
+        result.results.Mh11.supportPolygon, MATH_TITLE_FONT, lightShading
+    );
+    makeSurface(
+        'plotVhex4', result.xs, result.ys, result.results.Vhex4.zRecon, result.Nx, result.Ny, PLOT_TITLES.Vhex4,
+        result.results.Vhex4.supportPolygon, MATH_TITLE_FONT, lightShading
+    );
+    makeSurface(
+        'plotMh20', result.xs, result.ys, result.results.Mh20.zRecon, result.Nx, result.Ny, PLOT_TITLES.Mh20,
+        result.results.Mh20.supportPolygon, MATH_TITLE_FONT, lightShading
+    );
+
+    if (!basisMode) {
+        document.getElementById('errMh11').textContent = `(mean |err| = ${result.results.Mh11.meanAbsError.toExponential(3)})`;
+        document.getElementById('errVhex4').textContent = `(mean |err| = ${result.results.Vhex4.meanAbsError.toExponential(3)})`;
+        document.getElementById('errMh20').textContent = `(mean |err| = ${result.results.Mh20.meanAbsError.toExponential(3)})`;
+    }
+}
+
+lightShadingCheckbox.addEventListener('change', () => {
+    if (lastResult) renderResult(lastResult, lastBasisMode);
+});
+
 async function run() {
     reconstructBtn.disabled = true;
     statusEl.textContent = 'Reconstructing…';
     try {
         const basisMode = funcSelect.value === BASIS_OPTION;
-        const result = basisMode
-            ? await reconstructBasis(device, {})
-            : await reconstruct(device, {
-                  funcName: funcSelect.value,
-                  scaling: Number(scalingRange.value),
-                  prefilterScheme: prefilterSelect.value,
-              });
+        const result = await reconstruct(device, {
+            funcName: funcSelect.value,
+            scaling: Number(scalingRange.value),
+            prefilterScheme: prefilterSelect.value,
+        });
 
-        if (!basisMode) {
-            makeSurface('plotOriginal', result.xs, result.ys, result.zTrue, result.Nx, result.Ny, 'Original');
-        }
-        makeSurface(
-            'plotMh11', result.xs, result.ys, result.results.Mh11.zRecon, result.Nx, result.Ny, PLOT_TITLES.Mh11,
-            result.results.Mh11.supportPolygon, MATH_TITLE_FONT
-        );
-        makeSurface(
-            'plotVhex4', result.xs, result.ys, result.results.Vhex4.zRecon, result.Nx, result.Ny, PLOT_TITLES.Vhex4,
-            result.results.Vhex4.supportPolygon, MATH_TITLE_FONT
-        );
-        makeSurface(
-            'plotMh20', result.xs, result.ys, result.results.Mh20.zRecon, result.Nx, result.Ny, PLOT_TITLES.Mh20,
-            result.results.Mh20.supportPolygon, MATH_TITLE_FONT
-        );
-
-        if (!basisMode) {
-            document.getElementById('errMh11').textContent = `(mean |err| = ${result.results.Mh11.meanAbsError.toExponential(3)})`;
-            document.getElementById('errVhex4').textContent = `(mean |err| = ${result.results.Vhex4.meanAbsError.toExponential(3)})`;
-            document.getElementById('errMh20').textContent = `(mean |err| = ${result.results.Mh20.meanAbsError.toExponential(3)})`;
-        }
+        lastResult = result;
+        lastBasisMode = basisMode;
+        renderResult(result, basisMode);
 
         statusEl.textContent = '';
     } catch (err) {

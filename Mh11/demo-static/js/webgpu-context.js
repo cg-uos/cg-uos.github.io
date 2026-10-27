@@ -1,6 +1,4 @@
-// Minimal WebGPU device init + a generic compute-dispatch/readback helper,
-// standing in for the wgpu-py `compute_with_buffers` convenience function
-// used throughout the Python reference code.
+// Minimal WebGPU device init + a generic compute-dispatch/readback helper
 
 export async function initWebGPU() {
     if (!('gpu' in navigator)) {

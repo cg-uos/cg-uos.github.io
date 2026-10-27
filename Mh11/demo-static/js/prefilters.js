@@ -1,7 +1,5 @@
 // FIR (h0,h1,h2) and IIR2 (g0,g1,g2 -- the factored all-pole form, NOT the
-// undecomposed h-coefficients) dQI prefilter coefficients, transcribed
-// verbatim from each family's prefilter_dict in the corresponding module:
-//   OneDrive-Personal/work/python/{Mh11,Mh20,Vhex}.py
+// undecomposed h-coefficients) dQI prefilter coefficients.
 
 export const prefilters = {
     Mh11: {

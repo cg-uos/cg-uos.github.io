@@ -1,10 +1,7 @@
-// CPU port of hex.apply_IIR_checkerboard(data_in, g) -- the factored all-pole
-// IIR2 prefilter, applied as three separable mirror-boundary recursive passes
+// The factored all-pole IIR2 prefilter, applied as 
+// three separable mirror-boundary recursive passes
 // (columns, then both diagonal directions) over the checkerboard-packed
-// lattice array. Ported line-for-line (including its asymmetric handling of
-// length<=2 lines) since this boundary-handling logic isn't independently
-// re-derivable from the paper text.
-// (Full source: OneDrive-Personal/work/python/hex.py:567-679)
+// lattice array. 
 
 function applyIirMirrorSequence(values, g0, g1, g2) {
     const n = values.length;

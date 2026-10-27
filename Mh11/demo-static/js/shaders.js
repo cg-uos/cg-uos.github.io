@@ -1,9 +1,4 @@
-// WGSL compute shader builders. These mirror the shader-string generation in
-// hex.apply_FIR_checkerboard_WebGPU and each family's eval_*_WebGPU_bulk
-// (OneDrive-Personal/work/python/{hex,Mh11,Mh20,Vhex}.py). The WGSL kernel
-// bodies themselves are copied verbatim -- they are plain WGSL (not
-// wgpu-py-specific), so the box-spline evaluation math (the paper's Fig. 3
-// EvaluateSpline algorithm) does not need to be re-derived, only re-hosted.
+// WGSL compute shader builders. 
 
 import { shells } from './hex.js';
 
@@ -22,7 +17,6 @@ function formatXfmCoeffHeader(Xfm) {
     );
 }
 
-// Port of hex.apply_FIR_checkerboard_WebGPU's shader_source generation.
 export function buildFIRShader(FIRcoeffs, nx, ny) {
     let src = `const size_data: vec2i = vec2i(${nx},${ny});\n`;
     src += `
@@ -133,7 +127,6 @@ const TRANSFORM_TO_REF_6DIR = `
         }
 `;
 
-// Port of Mh11.eval_Mh11_WebGPU_bulk's shader_source (Mh11.py:838-1007).
 export function buildEvalShader_Mh11(nx, ny, Xfm, numPts) {
     let src = `const size_coeff: vec2i = vec2i(${nx}, ${ny});\n`;
     src += `const num_pts: u32 = ${numPts}u;\n`;
@@ -262,7 +255,6 @@ export function buildEvalShader_Mh11(nx, ny, Xfm, numPts) {
     return src;
 }
 
-// Port of Mh20.eval_Mh20_WebGPU_bulk's shader_source (Mh20.py:469-603).
 export function buildEvalShader_Mh20(nx, ny, Xfm, numPts) {
     let src = `const size_coeff: vec2i = vec2i(${nx}, ${ny});\n`;
     src += `const num_pts: u32 = ${numPts}u;\n`;
@@ -397,8 +389,6 @@ export function buildEvalShader_Mh20(nx, ny, Xfm, numPts) {
     return src;
 }
 
-// Port of Vhex.eval_Vhex_WebGPU_bulk's shader_source, order==4 branch
-// (Vhex.py:1048-1247).
 export function buildEvalShader_Vhex4(nx, ny, Xfm, numPts) {
     let src = `const size_coeff: vec2i = vec2i(${nx}, ${ny});\n`;
     src += `const num_pts: u32 = ${numPts}u;\n`;

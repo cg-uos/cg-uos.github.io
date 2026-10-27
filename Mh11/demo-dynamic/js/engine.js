@@ -10,8 +10,8 @@ import { GPUKernel } from './webgpu-context.js';
 import { prefilters } from './prefilters.js';
 import { SCALING } from './lattice.js';
 
-// Xfm_coeff (../../web/js/reconstruct.js): its 2x2 block equals hex.G in
-// index space; row-major nested-array layout, Xfm[row][col].
+// Xfm_coeff: its 2x2 block equals Ghex in index space; row-major
+// nested-array layout, Xfm[row][col].
 const XFM_COEFF = [
     [1, 1, 0],
     [-1, 1, 0],
@@ -45,16 +45,20 @@ function evalGridNFor(core) {
 
 // Builds the dense evaluation query grid over the lattice's visible "core"
 // region, in the pre-transformed coordinate space the eval shaders expect
-// (ptsRecon = xy/(2*scaling) + shift) -- ported from
-// ../../web/js/reconstruct.js's buildEvalGrid.
-function buildEvalGrid(core, i_min, j_min, N) {
+// (ptsRecon = xy/(2*scaling) + shift). Spans physical x in
+// [-core,core] and y in [-coreJ*SQRT3,coreJ*SQRT3] -- matching
+// lattice.buildLattice's own (core, coreJ) point-selection bounds exactly,
+// so the rendered surface's extent lines up with where real coefficient
+// data exists (coreJ already compensates for y's SQRT3 physical stretch,
+// making this domain square rather than a 1:SQRT3 rectangle).
+function buildEvalGrid(core, coreJ, i_min, j_min, N) {
     const xs = new Float32Array(N);
     const ys = new Float32Array(N);
     for (let a = 0; a < N; a++) {
         xs[a] = -core * SCALING + 2 * core * SCALING * (N === 1 ? 0 : a / (N - 1));
     }
     for (let b = 0; b < N; b++) {
-        ys[b] = -core * SCALING * SQRT3 + 2 * core * SCALING * SQRT3 * (N === 1 ? 0 : b / (N - 1));
+        ys[b] = -coreJ * SCALING * SQRT3 + 2 * coreJ * SCALING * SQRT3 * (N === 1 ? 0 : b / (N - 1));
     }
 
     const shiftX = -i_min / 2;
@@ -97,14 +101,14 @@ export class Engine {
         this.filterKey = filterKey;
         this.lattice = lattice;
 
-        const { nx, ny, core, i_min, j_min } = lattice;
+        const { nx, ny, core, coreJ, i_min, j_min } = lattice;
 
         const firWGSL = buildFIRShader(prefilters[filterKey].FIR, nx, ny);
         this.firKernel = new GPUKernel(this.device, firWGSL);
         this.firKernel.configure([nx * ny * 4], [nx * ny * 4]);
 
         this.gridN = evalGridNFor(core);
-        this.grid = buildEvalGrid(core, i_min, j_min, this.gridN);
+        this.grid = buildEvalGrid(core, coreJ, i_min, j_min, this.gridN);
 
         const buildEval = EVAL_SHADER_BUILDERS[filterKey];
         const evalWGSL = buildEval(nx, ny, XFM_COEFF, this.grid.numPts);

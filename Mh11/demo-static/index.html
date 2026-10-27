@@ -16,7 +16,7 @@
     Hexagonal spline reconstruction with the following procedure.:
     <ol class="note">
         <li>Samples an analytic test function on the hexagonal lattice</li>
-        <li>Spplies a discrete quasi-interpolation (dQI) prefilter</li>
+        <li>Applies a discrete quasi-interpolation (dQI) prefilter</li>
         <li>Evaluates the reconstructed spline via
             WebGPU compute shaders</li>
     </ol>
@@ -38,8 +38,10 @@
         <select id="prefilterSelect">
             <option value="FIR">FIR</option>
             <option value="IIR2">IIR2</option>
+            <option value="none">None (raw samples as coefficients)</option>
         </select>
     </label>
+    <label><input type="checkbox" id="lightShadingCheckbox"> Light shading</label>
     <button id="reconstructBtn">Reconstruct</button>
     <span id="status"></span>
 </div>

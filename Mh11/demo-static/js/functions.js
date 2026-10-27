@@ -1,10 +1,9 @@
-// Port of analytic_functions.py.
-// (Full source: OneDrive-Personal/work/python/analytic_functions.py)
-
 function domain(xmin, ymin, xmax, ymax) {
     return { xmin, ymin, xmax, ymax };
 }
 
+// list of analytic test functions, plus "delta (basis)" -- not a function to
+// reconstruct, but a way to see each family's basis shape itself
 export const functions = {
     "Franke": {
         fn: (x, y) =>
@@ -44,7 +43,18 @@ export const functions = {
         domain: domain(0, 0, 1, 1),
     },
     "SphericalDome": {
-        fn: (x, y) => Math.sqrt(64 - 81 * ((x - 0.5) ** 2 + (y - 0.5) ** 2)) / 9 - 0.5,
+        // Only non-negative under the sqrt within radius sqrt(64/81)~0.889
+        // of (0.5,0.5) -- comfortably outside this function's own displayed
+        // domain (corner distance ~0.707), but reconstruct()'s margin
+        // samples well beyond that (margin = scaling*9 or *4, pushing the
+        // sampled corners out to distance ~2 from center), landing deep in
+        // NaN territory and poisoning the FIR/eval stencils at every lattice
+        // point within reach of the contaminated margin -- not just a few
+        // edge pixels: at the default scaling this was ~98% of the
+        // reconstructed grid. Clamping to 0 outside that radius flattens the
+        // function to its rim height (z=-0.5) there instead, with no effect
+        // on the function's own values inside the displayed domain.
+        fn: (x, y) => Math.sqrt(Math.max(0, 64 - 81 * ((x - 0.5) ** 2 + (y - 0.5) ** 2))) / 9 - 0.5,
         domain: domain(0, 0, 1, 1),
     },
     "ExponentialCliff": {
@@ -62,5 +72,26 @@ export const functions = {
         // radius spans ~2 full periods and the concentric-ripple pattern the
         // function is named for is actually visible.
         domain: domain(-10, -10, 10, 10),
+    },
+    // Not a sampled analytic function: a Kronecker delta, which through the
+    // same sample/evaluate pipeline reproduces each family's reconstruction
+    // kernel (one unit coefficient at the lattice origin, every other
+    // coefficient zero) -- the raw basis function when the user picks "None"
+    // for the prefilter, or the prefilter's own impulse response for
+    // FIR/IIR2. `fixedScaling` overrides the UI's scaling control -- chosen,
+    // together with this domain, to frame every family's support without
+    // clipping or looking tiny; it isn't meant to be a "sampling density"
+    // for a basis shape, which has none. `noGroundTruth` tells reconstruct()
+    // there's no meaningful meanAbsError for this entry (regardless of
+    // prefilter choice, a delta has nothing sensible to compare against);
+    // it also gates the support-polygon overlay, but only together with
+    // prefilterScheme === 'none' -- FIR/IIR2 spread the delta into the
+    // prefilter's own impulse response, which isn't compactly supported the
+    // same way the raw basis function is, so the polygon wouldn't be exact.
+    "delta (basis)": {
+        fn: (x, y) => (x === 0 && y === 0 ? 1 : 0),
+        domain: domain(-2, -2, 2, 2),
+        fixedScaling: 0.2,
+        noGroundTruth: true,
     },
 };

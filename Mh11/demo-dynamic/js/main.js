@@ -14,6 +14,8 @@ const resolutionSelect = document.getElementById('resolutionSelect');
 const firCheckbox = document.getElementById('firCheckbox');
 const showCoeffCheckbox = document.getElementById('showCoeffCheckbox');
 const showSplineCheckbox = document.getElementById('showSplineCheckbox');
+const showLatticeCheckbox = document.getElementById('showLatticeCheckbox');
+const lightShadingCheckbox = document.getElementById('lightShadingCheckbox');
 const speedRange = document.getElementById('speedRange');
 const speedValue = document.getElementById('speedValue');
 const playPauseBtn = document.getElementById('playPauseBtn');
@@ -21,6 +23,7 @@ const regenerateBtn = document.getElementById('regenerateBtn');
 const bannerEl = document.getElementById('banner');
 const statusEl = document.getElementById('status');
 const fpsEl = document.getElementById('fpsValue');
+const plotDiv = document.getElementById('plotDiv');
 
 for (const r of RESOLUTIONS) {
     const opt = document.createElement('option');
@@ -46,31 +49,51 @@ let lastTs = null;
 let rafId = null;
 let busy = false; // guards against overlapping GPU round-trips if a frame is slow
 
-// Identifies the current animation-loop "epoch". A stale `frame()` call
-// that was already mid-GPU-round-trip when `onConfigChange` ran (and so
-// is still awaiting `engine.step()` under the *old* engine/lattice) checks
-// this before rescheduling itself; since `onConfigChange` always mints a
-// fresh token before starting its own loop, the stale chain sees a
-// mismatch and simply stops, rather than going on to reschedule itself
-// forever in parallel with the new loop.
+// Tracks whether the user is mid-drag on the plot, so the animation loop
+// can stop scheduling itself entirely during a drag (see `frame()`) and
+// restart on mouseup/touchend via `endDrag()`.
+let dragging = false;
+let loopSuspended = false;
+plotDiv.addEventListener('mousedown', () => { dragging = true; });
+plotDiv.addEventListener('touchstart', () => { dragging = true; }, { passive: true });
+function endDrag() {
+    dragging = false;
+    if (loopSuspended) {
+        loopSuspended = false;
+        rafId = requestAnimationFrame((ts) => frame(ts, loopToken));
+    }
+}
+window.addEventListener('mouseup', endDrag);
+window.addEventListener('touchend', endDrag);
+
+// Holds the camera orientation from Plotly's 'plotly_relayout' event, fed
+// into the next `renderPlot()` call (its `camera` option) so the user's
+// rotation survives the drag-pause above.
+let liveCamera = null;
+let relayoutListenerAttached = false;
+function attachRelayoutListenerOnce() {
+    if (relayoutListenerAttached || typeof plotDiv.on !== 'function') return;
+    relayoutListenerAttached = true;
+    plotDiv.on('plotly_relayout', (eventData) => {
+        if (eventData && eventData['scene.camera']) {
+            liveCamera = eventData['scene.camera'];
+        }
+    });
+}
+
+// Identifies the current animation-loop "epoch", so a stale `frame()`
+// chain from before a reconfigure stops instead of rescheduling itself
+// alongside the new one.
 let loopToken = null;
 
-// FPS of actual completed compute+render cycles -- *not* of
-// requestAnimationFrame callbacks. Those two differ whenever a GPU
-// round-trip (dispatch + async mapAsync readback) takes longer than one
-// vsync interval: rAF keeps firing at display refresh rate, but `busy`
-// makes every such tick a no-op until the in-flight cycle finishes, so
-// timing rAF ticks themselves would just report the display's refresh rate
-// instead of how fast this demo is actually computing.
+// Tracks FPS of completed compute+render cycles, not of
+// requestAnimationFrame callbacks (which can tick faster than the GPU
+// round-trip actually completes).
 let lastStepTs = null;
 let fpsEma = null;
 
-// Resolves once no `frame()` call is mid-GPU-round-trip. Needed before
-// `engine.configure()` destroys the current kernels' buffers: destroying a
-// buffer that a just-started `frame()` is still awaiting `mapAsync()` on
-// throws an unhandled AbortError ("Buffer was destroyed before mapping was
-// resolved"), and would otherwise land in that stale frame()'s catch block
-// and overwrite this reconfiguration's just-cleared status text.
+// Resolves once no `frame()` call is mid-GPU-round-trip, so
+// `engine.configure()` can safely destroy the current buffers.
 function waitUntilIdle() {
     return new Promise((resolve) => {
         (function poll() {
@@ -88,43 +111,50 @@ function rebuildLattice() {
 }
 
 async function frame(ts, token) {
-    if (token !== loopToken) return; // superseded by a newer onConfigChange; let this chain die
+    if (token !== loopToken) return; // a second onConfigChange ran before this chain's own reconfigure finished; let it die
 
     if (lastTs === null) lastTs = ts;
     const dt = (ts - lastTs) / 1000;
     lastTs = ts;
     if (playing) elapsed += dt * Number(speedRange.value);
 
-    if (!busy) {
+    if (!busy && !dragging) {
         busy = true;
         evaluateFrame(params, elapsed, coeffRaw);
         try {
             const zRecon = await engine.step(coeffRaw, firCheckbox.checked);
             busy = false;
-            if (token !== loopToken) return; // config changed while this step was in flight
+            // Re-check `dragging`: it can turn true while this step was
+            // already in flight.
+            if (token === loopToken && !dragging) {
+                for (const p of lattice.points) p.z = coeffRaw[p.offset];
 
-            for (const p of lattice.points) p.z = coeffRaw[p.offset];
+                renderPlot('plotDiv', {
+                    xs: engine.grid.xs,
+                    ys: engine.grid.ys,
+                    zFlat: zRecon,
+                    N: engine.gridN,
+                    points: lattice.points,
+                    edges: lattice.edges,
+                    showSpline: showSplineCheckbox.checked,
+                    showCoefficients: showCoeffCheckbox.checked,
+                    showLattice: showLatticeCheckbox.checked,
+                    lightShading: lightShadingCheckbox.checked,
+                    camera: liveCamera,
+                    title: PLOT_TITLES[filterSelect.value],
+                });
+                attachRelayoutListenerOnce();
+                statusEl.textContent = '';
 
-            renderPlot('plotDiv', {
-                xs: engine.grid.xs,
-                ys: engine.grid.ys,
-                zFlat: zRecon,
-                N: engine.gridN,
-                points: lattice.points,
-                showSpline: showSplineCheckbox.checked,
-                showCoefficients: showCoeffCheckbox.checked,
-                title: PLOT_TITLES[filterSelect.value],
-            });
-            statusEl.textContent = '';
-
-            const now = performance.now();
-            if (lastStepTs !== null) {
-                const stepDt = (now - lastStepTs) / 1000;
-                const instFps = stepDt > 0 ? 1 / stepDt : 0;
-                fpsEma = fpsEma === null ? instFps : fpsEma * 0.85 + instFps * 0.15;
-                fpsEl.textContent = `${fpsEma.toFixed(1)} fps`;
+                const now = performance.now();
+                if (lastStepTs !== null) {
+                    const stepDt = (now - lastStepTs) / 1000;
+                    const instFps = stepDt > 0 ? 1 / stepDt : 0;
+                    fpsEma = fpsEma === null ? instFps : fpsEma * 0.85 + instFps * 0.15;
+                    fpsEl.textContent = `${fpsEma.toFixed(1)} fps`;
+                }
+                lastStepTs = now;
             }
-            lastStepTs = now;
         } catch (err) {
             busy = false;
             if (token !== loopToken) return; // destroyed-buffer abort from a reconfigure; not a real error
@@ -134,12 +164,23 @@ async function frame(ts, token) {
         }
     }
 
+    if (token !== loopToken) return; // config changed while the step above was in flight
+
+    // Stop scheduling the next tick while a drag is in progress;
+    // `endDrag()` restarts the chain once the drag ends.
+    if (dragging) {
+        loopSuspended = true;
+        return;
+    }
     rafId = requestAnimationFrame((ts2) => frame(ts2, token));
 }
 
 async function onConfigChange() {
     const token = (loopToken = {}); // invalidate any still-running loop immediately
     if (rafId !== null) cancelAnimationFrame(rafId);
+    // Clear any pending drag-suspend: a fresh loop starts below regardless,
+    // and a later mouseup/touchend shouldn't start a second one.
+    loopSuspended = false;
     filterSelect.disabled = true;
     resolutionSelect.disabled = true;
     statusEl.textContent = 'Rebuilding GPU pipeline…';

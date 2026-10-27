@@ -1,10 +1,8 @@
-// Port of the hex-lattice geometry/sampling parts of hex.py needed by this demo.
-// (Full source: OneDrive-Personal/work/python/hex.py)
 
 export const SQRT3 = Math.sqrt(3);
 
-// Inverse of the hex lattice generator G. Matches the literal constant baked
-// into every eval WGSL shader (`Ghex_inv`) -- reused as-is rather than
+// Inverse of the hex lattice generator Ghex. Matches the literal constant baked
+// into every eval WGSL shader ("Ghex_inv") -- reused as-is rather than
 // recomputed, to avoid float drift between the CPU-side sampling code and the
 // GPU-side evaluation code.
 export const Ghex_inv = [
@@ -14,15 +12,13 @@ export const Ghex_inv = [
 
 // shells[0..2]: only the first three "rings" of hex-lattice neighbors are
 // needed here, since every FIR/IIR2 coefficient array used by this demo has
-// at most 3 entries (h0/g0, h1/g1, h2/g2). Copied verbatim from hex.py's
-// `shells` table.
+// at most 3 entries (h0/g0, h1/g1, h2/g2). 
 export const shells = [
     [[0, 0]],
     [[1, 0], [1, 1], [0, 1], [-1, 0], [-1, -1], [0, -1]],
     [[2, 1], [1, 2], [-1, 1], [-2, -1], [-1, -2], [1, -1]],
 ];
 
-// Port of hex.find_covering_lattice(domain, scaling).
 // domain = [xmin, ymin, xmax, ymax]
 export function findCoveringLattice(domain, scaling) {
     const [xmin, ymin, xmax, ymax] = domain;
@@ -33,16 +29,15 @@ export function findCoveringLattice(domain, scaling) {
     return { i_min, j_min, i_max, j_max };
 }
 
-// Port of hex.sample_function(f, domain, scaling).
-// Samples fn(x,y) on the hex lattice scaling*G*Z^2 within `domain`.
+// Samples fn(x,y) on the hex lattice scaling*Ghex*Z^2 within "domain".
 // Returns a flat row-major (i-major) Float32Array z of shape (nx,ny): the
 // same layout the WGSL eval/prefilter shaders index via
-// `coeff[y + x*size_coeff.y]` (x = i-index in [0,nx), y = j-index in [0,ny)).
+// "coeff[y + x*size_coeff.y]" (x = i-index in [0,nx), y = j-index in [0,ny)).
 export function sampleFunction(fn, domain, scaling) {
     let { i_min, j_min, i_max, j_max } = findCoveringLattice(domain, scaling);
 
     // Force an odd extent on both axes -- required by the checkerboard array
-    // convention (see CLAUDE.md: "(i+j) even" = real lattice point).
+    // convention ("(i+j) even" = real lattice point).
     if ((i_max - i_min) % 2 === 0) i_max += 1;
     if ((j_max - j_min) % 2 === 0) j_max += 1;
 
